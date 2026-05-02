@@ -1,0 +1,97 @@
+name: pull_request_created
+permissions: read-all
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    paths-ignore:
+      - '*.md'
+      - 'LICENSE'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vet:
+    name: go vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+      - run: go vet ./...
+
+  test:
+    name: Unit tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+      - run: go test ./...
+
+  e2e:
+    name: End-to-end with kubescape master
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: helm-kubescape
+
+      - name: Checkout kubescape master
+        uses: actions/checkout@v4
+        with:
+          repository: kubescape/kubescape
+          path: kubescape
+          ref: master
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+          cache-dependency-path: |
+            helm-kubescape/go.sum
+            kubescape/go.sum
+
+      - name: Build kubescape
+        working-directory: kubescape
+        run: go build -o "${GITHUB_WORKSPACE}/bin/kubescape" .
+
+      - name: Build helm-kubescape
+        working-directory: helm-kubescape
+        run: go build -o "${GITHUB_WORKSPACE}/bin/helm-kubescape" ./cmd/helm-kubescape
+
+      - name: Run plugin against example chart
+        env:
+          KUBESCAPE_BIN: ${{ github.workspace }}/bin/kubescape
+        run: |
+          "${GITHUB_WORKSPACE}/bin/helm-kubescape" scan \
+              kubescape/examples/helm_chart \
+              --set image.pullPolicy=Never \
+              --release-name e2e-release \
+              --format json --output /tmp/scan.json
+
+      - name: Verify overrides took effect
+        run: |
+          set -euo pipefail
+          grep -q '"imagePullPolicy":"Never"' /tmp/scan.json \
+              || { echo "image.pullPolicy override missing from scan output"; exit 1; }
+          grep -q '"name":"e2e-release-' /tmp/scan.json \
+              || { echo ".Release.Name did not propagate to rendered manifests"; exit 1; }
+          echo "OK: --set and --release-name both flowed through to kubescape."
+
+      - name: Upload scan output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-output
+          path: /tmp/scan.json
