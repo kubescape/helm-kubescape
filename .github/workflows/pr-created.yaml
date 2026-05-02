@@ -1,0 +1,86 @@
+name: pull_request_created
+permissions: read-all
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    paths-ignore:
+      - '*.md'
+      - 'LICENSE'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: '.'
+          severity: warning
+
+  smoke:
+    name: Smoke tests (flag translation)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run plugin smoke tests
+        run: bash test/smoke.sh
+
+  e2e:
+    name: End-to-end with kubescape master
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: helm-kubescape
+
+      - name: Checkout kubescape master
+        uses: actions/checkout@v4
+        with:
+          repository: kubescape/kubescape
+          path: kubescape
+          ref: master
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build kubescape
+        working-directory: kubescape
+        run: go build -o "${GITHUB_WORKSPACE}/bin/kubescape" .
+
+      - name: Run plugin against example chart
+        env:
+          KUBESCAPE_BIN: ${{ github.workspace }}/bin/kubescape
+        run: |
+          bash helm-kubescape/scripts/helm-kubescape.sh scan \
+              kubescape/examples/helm_chart \
+              --set image.pullPolicy=Never \
+              --release-name e2e-release \
+              --format json --output /tmp/scan.json
+
+      - name: Verify overrides took effect
+        run: |
+          set -euo pipefail
+          grep -q '"imagePullPolicy":"Never"' /tmp/scan.json \
+              || { echo "image.pullPolicy override missing from scan output"; exit 1; }
+          grep -q '"name":"e2e-release-' /tmp/scan.json \
+              || { echo ".Release.Name did not propagate to rendered manifests"; exit 1; }
+          echo "OK: --set and --release-name both flowed through to kubescape."
+
+      - name: Upload scan output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-output
+          path: /tmp/scan.json

@@ -1,0 +1,13 @@
+name: "kubescape"
+version: "0.1.0"
+usage: "Scan a Helm chart with Kubescape (helm kubescape scan <chart>)"
+description: |
+  Scan a Helm chart with Kubescape, applying standard Helm value overrides
+  (-f / --values, --set, --set-string, --set-file) and Helm release identity
+  (--release-name / --release-namespace, or -n) before the scan. The plugin
+  forwards arguments to the locally installed `kubescape` CLI; per-template
+  source mapping is preserved by Kubescape's own renderer.
+command: "$HELM_PLUGIN_DIR/scripts/helm-kubescape.sh"
+hooks:
+  install: "$HELM_PLUGIN_DIR/install-binary.sh"
+  update:  "$HELM_PLUGIN_DIR/install-binary.sh"

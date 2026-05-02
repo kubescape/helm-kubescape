@@ -1,0 +1,2 @@
+# Use Bash semantics for all scripts in this repo.
+shell=bash
