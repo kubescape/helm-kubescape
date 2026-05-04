@@ -1,0 +1,11 @@
+# Binaries / build output
+bin/
+dist/
+*.log
+*.out
+*.tmp
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store

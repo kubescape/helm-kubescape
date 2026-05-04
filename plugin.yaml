@@ -1,0 +1,40 @@
+name: "kubescape"
+version: "0.1.0"
+usage: "Scan a Helm chart with Kubescape (helm kubescape scan <chart>)"
+description: |
+  Scan a Helm chart with Kubescape, applying standard Helm value overrides
+  (-f / --values, --set, --set-string, --set-file) and Helm release identity
+  (--release-name / --release-namespace, or -n) before the scan. Remote chart
+  references (oci://, https://, repo/chart, .tgz) are resolved via Helm's SDK
+  and unpacked locally before scanning. The plugin then invokes the local
+  `kubescape` CLI; per-template source mapping in findings is preserved by
+  Kubescape's own renderer.
+
+# Per-OS overrides. On Windows the binary has a .exe suffix; the install hook
+# is a PowerShell script. platformCommand / platformHooks ensure a stock
+# `helm plugin install` works on Windows without users needing bash.
+platformCommand:
+  - os: windows
+    command: "$HELM_PLUGIN_DIR\\bin\\helm-kubescape.exe"
+  - os: linux
+    command: "$HELM_PLUGIN_DIR/bin/helm-kubescape"
+  - os: darwin
+    command: "$HELM_PLUGIN_DIR/bin/helm-kubescape"
+
+platformHooks:
+  install:
+    - os: windows
+      command: "powershell"
+      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "$HELM_PLUGIN_DIR\\install-binary.ps1"]
+    - os: linux
+      command: "$HELM_PLUGIN_DIR/install-binary.sh"
+    - os: darwin
+      command: "$HELM_PLUGIN_DIR/install-binary.sh"
+  update:
+    - os: windows
+      command: "powershell"
+      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "$HELM_PLUGIN_DIR\\install-binary.ps1"]
+    - os: linux
+      command: "$HELM_PLUGIN_DIR/install-binary.sh"
+    - os: darwin
+      command: "$HELM_PLUGIN_DIR/install-binary.sh"
