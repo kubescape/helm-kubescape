@@ -16,6 +16,7 @@ package flags
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/pflag"
 )
@@ -38,6 +39,11 @@ type Parsed struct {
 	// Both -n/--namespace and --release-namespace land here; --release-namespace wins
 	// if both are set, matching the principle of "more-specific flag wins".
 	ReleaseNamespace string
+	// Version is the chart version requested via --version. Only meaningful for
+	// remote refs (oci://, repo/chart, https://) — it is threaded into action.Pull.Version
+	// by the resolver so `helm install --version 1.2.3` semantics are preserved.
+	// For local dirs / .tgz it is ignored.
+	Version string
 	// Passthrough is every other token in argv, preserved in original order. These
 	// are forwarded verbatim to `kubescape scan` so kubescape-native flags work
 	// without the plugin having to enumerate them.
@@ -98,6 +104,7 @@ func Parse(argv []string) (Parsed, error) {
 	fs.StringVarP(&namespace, "namespace", "n", "", "release namespace (sets .Release.Namespace)")
 	fs.StringVar(&p.ReleaseName, "release-name", "", "release name (sets .Release.Name)")
 	fs.StringVar(&p.ReleaseNamespace, "release-namespace", "", "release namespace (sets .Release.Namespace)")
+	fs.StringVar(&p.Version, "version", "", "chart version to pull when chart ref is remote (oci://, repo/chart, https://)")
 
 	// Walk argv ourselves to capture passthrough tokens in original order.
 	// pflag's parser would either error or silently drop unknown flags; we want
@@ -114,6 +121,7 @@ func Parse(argv []string) (Parsed, error) {
 		"--set": true, "--set-string": true, "--set-file": true,
 		"-n": true, "--namespace": true,
 		"--release-name": true, "--release-namespace": true,
+		"--version": true,
 	}
 	var forFS []string
 	for i := 0; i < len(argv); i++ {
@@ -144,7 +152,19 @@ func Parse(argv []string) (Parsed, error) {
 			}
 		}
 		if !known[name] {
+			// Unknown flag: forward verbatim. To avoid swallowing the chart positional
+			// (e.g. `--format json ./chart` would otherwise leave `json` as Chart and
+			// `./chart` as a stray passthrough token), assume the unknown flag takes a
+			// value when the next token is not flag-shaped and the flag wasn't given
+			// inline (--foo=bar). Caveat: a true boolean unknown flag (e.g.
+			// `--scan-images`) followed by a positional looks identical from here; users
+			// can disambiguate by writing `--scan-images=true` or by placing the chart
+			// arg before any unknown flag.
 			p.Passthrough = append(p.Passthrough, tok)
+			if !hasInlineValue && i+1 < len(argv) && !strings.HasPrefix(argv[i+1], "-") {
+				p.Passthrough = append(p.Passthrough, argv[i+1])
+				i++
+			}
 			continue
 		}
 		// Known flag. Hand pflag both the flag and its value (if separate).

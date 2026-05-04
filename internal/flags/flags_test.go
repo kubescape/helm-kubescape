@@ -82,6 +82,35 @@ func TestParse(t *testing.T) {
 			want: Parsed{Chart: "./c", Passthrough: []string{"--format", "json", "--severity-threshold", "high"}},
 		},
 		{
+			// Regression: previously the parser pushed --format to passthrough but did
+			// not consume `json` as its value, so `json` became Chart and `./chart`
+			// became a stray passthrough token. Unknown flag + non-flag token must be
+			// paired before the chart-positional pass.
+			name: "unknown flag with value preceding chart positional",
+			argv: []string{"--format", "json", "./chart"},
+			want: Parsed{Chart: "./chart", Passthrough: []string{"--format", "json"}},
+		},
+		{
+			name: "unknown flag followed by another flag (boolean-style) keeps chart correct",
+			argv: []string{"./c", "--scan-images", "--format", "json"},
+			want: Parsed{Chart: "./c", Passthrough: []string{"--scan-images", "--format", "json"}},
+		},
+		{
+			name: "unknown flag inline value does not consume next token",
+			argv: []string{"--format=json", "./chart"},
+			want: Parsed{Chart: "./chart", Passthrough: []string{"--format=json"}},
+		},
+		{
+			name: "--version captured on Parsed (not forwarded as kubescape flag)",
+			argv: []string{"oci://ghcr.io/foo/bar", "--version", "1.2.3"},
+			want: Parsed{Chart: "oci://ghcr.io/foo/bar", Version: "1.2.3"},
+		},
+		{
+			name: "--version=X inline form",
+			argv: []string{"bitnami/nginx", "--version=15.0.0"},
+			want: Parsed{Chart: "bitnami/nginx", Version: "15.0.0"},
+		},
+		{
 			name: "passthrough boolean flag (no value)",
 			argv: []string{"./c", "--verbose"},
 			want: Parsed{Chart: "./c", Passthrough: []string{"--verbose"}},

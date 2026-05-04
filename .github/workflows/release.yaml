@@ -7,11 +7,12 @@ on:
       - 'v*'
 
 jobs:
-  release:
-    name: Create GitHub release
+  # Gate the release on a green build before any artifact ships. The PR-CI workflow
+  # covers richer matrix testing on PRs; here we re-run the basics against the tag
+  # commit so a packaging or build regression cannot ship as a tagged release.
+  validate:
+    name: Validate (test + build + smoke)
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -25,6 +26,36 @@ jobs:
             exit 1
           fi
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./...
+
+      - name: go build
+        run: |
+          mkdir -p bin
+          go build -trimpath -ldflags='-s -w' -o bin/helm-kubescape ./cmd/helm-kubescape
+
+      - name: Plugin smoke (help + version)
+        run: |
+          set -euo pipefail
+          ./bin/helm-kubescape help >/dev/null
+          ./bin/helm-kubescape version >/dev/null || true   # version probes kubescape; tolerate missing CLI
+
+  release:
+    name: Create GitHub release
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Build source tarball
         run: |
           set -euo pipefail
@@ -32,7 +63,7 @@ jobs:
           archive="helm-kubescape-${tag}.tar.gz"
           tar --exclude='.git' --exclude='.github' --exclude='dist' \
               -czf "${archive}" \
-              plugin.yaml install-binary.sh Makefile \
+              plugin.yaml install-binary.sh install-binary.ps1 Makefile \
               go.mod go.sum cmd internal \
               README.md LICENSE
           sha256sum "${archive}" | tee "${archive}.sha256"

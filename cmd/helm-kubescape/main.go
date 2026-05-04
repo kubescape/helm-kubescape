@@ -74,7 +74,7 @@ func runScan(argv []string) int {
 		return 127
 	}
 
-	res, cleanup, err := chartresolve.Resolve(parsed.Chart)
+	res, cleanup, err := chartresolve.Resolve(parsed.Chart, chartresolve.Options{Version: parsed.Version})
 	defer cleanup()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", pluginName, err)

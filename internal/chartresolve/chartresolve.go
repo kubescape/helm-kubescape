@@ -31,6 +31,7 @@ import (
 
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/cli"
+	"helm.sh/helm/v3/pkg/registry"
 )
 
 // Result describes a resolved chart.
@@ -41,10 +42,17 @@ type Result struct {
 	IsTemp bool
 }
 
+// Options controls Resolve's behavior. Zero value is fine: defaults match
+// `helm pull` with no extra flags. Version is the chart version to request when
+// pulling a remote ref; ignored for local dirs and .tgz inputs.
+type Options struct {
+	Version string
+}
+
 // Resolve turns a chart reference into a local directory. The returned cleanup
 // func is always non-nil and always safe to call — for local-directory inputs
 // it's a no-op; for pulled or unpacked charts it removes the temp dir.
-func Resolve(ref string) (Result, func(), error) {
+func Resolve(ref string, opts Options) (Result, func(), error) {
 	noop := func() {}
 	if ref == "" {
 		return Result{}, noop, errors.New("chart reference is empty")
@@ -66,7 +74,7 @@ func Resolve(ref string) (Result, func(), error) {
 
 	// Remote refs Helm can pull: oci://, http(s)://, or repo/chart.
 	if isRemoteRef(ref) {
-		return pullAndUntar(ref)
+		return pullAndUntar(ref, opts)
 	}
 
 	// Local path that doesn't exist (or repo/chart we don't recognize): pass through.
@@ -111,10 +119,35 @@ func isRemoteRef(ref string) bool {
 	return true
 }
 
+// newPullAction configures an action.Pull mirroring Helm's CLI defaults
+// (cmd/helm/root.go newDefaultRegistryClient + the pull action wiring), with
+// our own DestDir/UntarDir override and chart-version pinning. Extracted so
+// tests can assert the registry client is wired (otherwise oci:// pulls fail
+// at runtime with a nil-client deref).
+func newPullAction(opts Options, destDir string) (*action.Pull, *action.Configuration, error) {
+	settings := cli.New()
+	regClient, err := registry.NewClient(
+		registry.ClientOptEnableCache(true),
+		registry.ClientOptWriter(os.Stderr),
+		registry.ClientOptCredentialsFile(settings.RegistryConfig),
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("creating registry client: %w", err)
+	}
+	cfg := &action.Configuration{RegistryClient: regClient}
+	pull := action.NewPullWithOpts(action.WithConfig(cfg))
+	pull.Settings = settings
+	pull.DestDir = destDir
+	pull.Untar = true
+	pull.UntarDir = destDir
+	pull.Version = opts.Version
+	return pull, cfg, nil
+}
+
 // pullAndUntar uses Helm's pull action to fetch a chart and untar it into a temp dir.
 // We rely on Helm's CLI environment defaults (cli.New()) so users who already configured
 // `helm repo add` / `HELM_REPOSITORY_CONFIG` etc. don't have to reconfigure anything.
-func pullAndUntar(ref string) (Result, func(), error) {
+func pullAndUntar(ref string, opts Options) (Result, func(), error) {
 	noop := func() {}
 
 	tempDir, err := os.MkdirTemp("", "helm-kubescape-")
@@ -123,13 +156,11 @@ func pullAndUntar(ref string) (Result, func(), error) {
 	}
 	cleanup := func() { _ = os.RemoveAll(tempDir) }
 
-	settings := cli.New()
-	cfg := new(action.Configuration)
-	pull := action.NewPullWithOpts(action.WithConfig(cfg))
-	pull.Settings = settings
-	pull.DestDir = tempDir
-	pull.Untar = true
-	pull.UntarDir = tempDir
+	pull, _, err := newPullAction(opts, tempDir)
+	if err != nil {
+		cleanup()
+		return Result{}, noop, err
+	}
 
 	// repo/chart references need the repo URL resolved. Pull's RepoURL+Ref split is
 	// driven by the ChartPathOptions; for "repo/chart" form, action.Pull handles
