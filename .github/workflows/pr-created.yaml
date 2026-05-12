@@ -18,9 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version: '1.23'
+          go-version-file: go.mod
           cache: true
       - run: go vet ./...
 
@@ -33,9 +33,9 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version: '1.23'
+          go-version-file: go.mod
           cache: true
       - run: go test ./...
 
@@ -54,9 +54,9 @@ jobs:
           path: kubescape
           ref: master
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version: '1.23'
+          go-version-file: kubescape/go.mod
           cache: true
           cache-dependency-path: |
             helm-kubescape/go.sum
