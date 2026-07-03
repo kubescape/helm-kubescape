@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
+	"syscall"
 
 	"github.com/kubescape/helm-kubescape/internal/chartresolve"
 	"github.com/kubescape/helm-kubescape/internal/flags"
@@ -82,7 +84,9 @@ func runScan(argv []string) int {
 	}
 	parsed.Chart = res.LocalPath
 
-	cmd := exec.CommandContext(context.Background(), kubescape, append([]string{"scan"}, parsed.KubescapeArgs()...)...)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	cmd := exec.CommandContext(ctx, kubescape, append([]string{"scan"}, parsed.KubescapeArgs()...)...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
