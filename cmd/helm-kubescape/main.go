@@ -2,17 +2,17 @@
 // the same flags users would pass to `helm install`.
 //
 // The plugin's contract:
-//   1. Parse argv with Helm-style flag bindings (pflag, mirroring helm.sh/helm/v3
-//      cmd/helm/flags.go) so -f / --set / --release-name / -n behave identically
-//      to `helm install`.
-//   2. If the chart reference is remote (oci://, http(s)://, repo/chart, .tgz),
-//      resolve it via Helm's SDK to a local directory.
-//   3. Exec `kubescape scan <local-dir> --values ... --set ... --release-name ...`,
-//      forwarding any unrecognized flags verbatim. Kubescape does the rendering;
-//      per-template source mapping in findings is preserved by kubescape's
-//      renderer.
-//   4. Inherit kubescape's exit code so CI gates (e.g. --severity-threshold) work
-//      transparently.
+//  1. Parse argv with Helm-style flag bindings (pflag, mirroring helm.sh/helm/v3
+//     cmd/helm/flags.go) so -f / --set / --release-name / -n behave identically
+//     to `helm install`.
+//  2. If the chart reference is remote (oci://, http(s)://, repo/chart, .tgz),
+//     resolve it via Helm's SDK to a local directory.
+//  3. Exec `kubescape scan <local-dir> --values ... --set ... --release-name ...`,
+//     forwarding any unrecognized flags verbatim. Kubescape does the rendering;
+//     per-template source mapping in findings is preserved by kubescape's
+//     renderer.
+//  4. Inherit kubescape's exit code so CI gates (e.g. --severity-threshold) work
+//     transparently.
 package main
 
 import (
@@ -21,6 +21,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
+	"sync"
+	"syscall"
 
 	"github.com/kubescape/helm-kubescape/internal/chartresolve"
 	"github.com/kubescape/helm-kubescape/internal/flags"
@@ -82,17 +85,82 @@ func runScan(argv []string) int {
 	}
 	parsed.Chart = res.LocalPath
 
-	cmd := exec.CommandContext(context.Background(), kubescape, append([]string{"scan"}, parsed.KubescapeArgs()...)...)
+	cmd := exec.Command(kubescape, append([]string{"scan"}, parsed.KubescapeArgs()...)...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	if err := cmd.Run(); err != nil {
+	return runForwardingSignals(cmd, kubescape)
+}
+
+// runForwardingSignals runs cmd, forwarding the first SIGINT or SIGTERM the plugin
+// receives to the child rather than killing it, and returns the exit code the
+// plugin should exit with.
+//
+// exec.CommandContext is deliberately not used here: its default Cancel is
+// Process.Kill, so a cancelled context hard-kills kubescape instead of delivering
+// the signal the plugin was sent. Kubescape handles SIGINT and SIGTERM itself, and
+// a kill also loses the status, because ExitError.ExitCode reports -1 for a
+// signalled child and the plugin would surface that as 255.
+//
+// A child the plugin signalled is reported as 128+signum, the shell convention
+// (130 for SIGINT, 143 for SIGTERM), so a caller can tell an interrupted scan from
+// a failed one.
+func runForwardingSignals(cmd *exec.Cmd, name string) int {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+
+	return runForwarding(cmd, name, signals)
+}
+
+// runForwarding is runForwardingSignals with the signal source injected, so tests
+// can drive the forwarding path without signalling the test process itself.
+func runForwarding(cmd *exec.Cmd, name string, signals <-chan os.Signal) int {
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: failed to invoke %s: %v\n", pluginName, name, err)
+		return 1
+	}
+
+	var (
+		mu        sync.Mutex
+		forwarded os.Signal
+	)
+	go func() {
+		sig, ok := <-signals
+		if !ok {
+			return
+		}
+		mu.Lock()
+		forwarded = sig
+		mu.Unlock()
+		// Windows has no signal delivery, so Signal fails there and the child is
+		// killed instead. That is the best available behaviour on that platform,
+		// rather than leaving the scan running.
+		if err := cmd.Process.Signal(sig); err != nil {
+			_ = cmd.Process.Kill()
+		}
+	}()
+
+	waitErr := cmd.Wait()
+
+	mu.Lock()
+	sig := forwarded
+	mu.Unlock()
+
+	if sig != nil {
+		if s, ok := sig.(syscall.Signal); ok {
+			return 128 + int(s)
+		}
+		return 1
+	}
+
+	if waitErr != nil {
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if errors.As(waitErr, &exitErr) {
 			return exitErr.ExitCode()
 		}
-		fmt.Fprintf(os.Stderr, "%s: failed to invoke %s: %v\n", pluginName, kubescape, err)
+		fmt.Fprintf(os.Stderr, "%s: failed to invoke %s: %v\n", pluginName, name, waitErr)
 		return 1
 	}
 	return 0
