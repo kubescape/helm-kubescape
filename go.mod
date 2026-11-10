@@ -3,7 +3,7 @@ module github.com/kubescape/helm-kubescape
 go 1.26.0
 
 require (
-	github.com/spf13/pflag v1.0.10
+	github.com/spf13/pflag v1.1.0
 	helm.sh/helm/v3 v3.22.1
 	sigs.k8s.io/yaml v1.6.0
 )
